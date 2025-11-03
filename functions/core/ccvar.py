@@ -3,7 +3,7 @@ import numpy as np
 
 class CCVAR:
 
-    def __init__(self, algorithmParam, cellularComplex):
+    def __init__(self, algorithmParam, cellularComplex, theta_initializer = None):
         self.__algorithm_parameter_setup(algorithmParam)
         
         self._data_keys = [i for i in range(len(self._data_enabler)) if self._data_enabler[i]]
@@ -26,6 +26,11 @@ class CCVAR:
         #     self._data_keys.append("u")
 
         self._data_initializer()
+        
+        if theta_initializer is None:
+            self._theta_initializer = self.__zero_initializer
+        else:
+            self._theta_initializer = theta_initializer
 
         self._phi = dict()
         self._r = dict()
@@ -33,18 +38,27 @@ class CCVAR:
         for key in self._data_keys:
             self._phi[key] = 0
             self._r[key] = 0
-            self._theta[key] = 0
+            self._theta[key] = None
             
         
 
         # assert self.__check_initial(initializer)
+    
+    def __zero_initializer(self, theta_size, key):
+        self._theta[key] = np.zeros(shape = (theta_size, 1))
 
     def _data_initializer(self):
         ## NOTE Inherit the class to change the initializer
         self._data = dict()
-
+        self._norm_scale = dict()
+        self._bias = dict()
         for key in self._data_keys:
             self._data[key] =  np.zeros(shape = (self._N[key], self._P))
+            self._norm_scale[key] = 0
+            if self._bias_enabler:
+                self._bias = np.ones(shape = (self._N[key],1))
+            else:
+                self._bias = np.empty(shape = (self._N[key], 0))
         # if "l" in self._data_keys:
         #     self._data["l"] = np.zeros(shape = (self._Hodge["N0"], self._P))
         # if "s" in self._data_keys:
@@ -75,6 +89,9 @@ class CCVAR:
             self._data[key] = np.roll(self._data[key], shift = 1, axis = 1)
             self._data[key][:,0] = inputData[key]
 
+            if self._LassoEn:
+                self._theta[key] *= np.max(0, 1 - eta * self._lambda/np.abs(self._theta[key]))
+
     def predict(self):
 
         featureDict = self.__feature_gen()
@@ -103,9 +120,12 @@ class CCVAR:
         self._LassoEn = algorithmParam.get('LassoEn', 0)
         self._HodgeNormalzn = algorithmParam.get('HodgeNormalzn', False)
         self._FeatureNormalzn = algorithmParam.get('FeatureNormalzn', True)
+        self._bias_enabler = algorithmParam.get('BiasEn', True)
+
         self._b = algorithmParam.get('b', 1)
         self._gamma = algorithmParam.get('gamma', 0.98)
-        self._delta = 1 - self._gamma
+        
+        # self._delta = 1 - self._gamma
 
         self._P = algorithmParam.get('P', 2)
         self._K = algorithmParam.get('K', ((2), (2,2,4), (2)))
@@ -150,6 +170,11 @@ class CCVAR:
             self._phi[key] = self._gamma * self._phi[key] + (1 - self._gamma) * currFeature.T @ (Rk) @ currFeature
 
             self._r[key] = self._gamma * self._r[key] + (1-self._gamma) * currFeature.T @ inputData[key][:,-1]
+
+            if self._theta[key] is None:
+                self._theta[key] = self._theta_initializer(theta_size=self._phi[key].shape, key=key)
+            
+
         
     
     def __feature_gen(self):
@@ -180,6 +205,15 @@ class CCVAR:
                 x_2 = self._data.get(key + 1)
                 featureDict[key] = self.__edge_features(x_0, x_1, x_2, key)
 
+            if self._FeatureNormalzn:
+                if not self._data_enabler:
+                    S_n = np.sum(np.power(featureDict[key],2), axis = 0)
+                    S_n[S_n == 0] = 1e-3 # Check this line, This seems true
+                    varV = np.sum(np.power(featureDict[key][:,0],2), axis = 0)
+                    self._norm_scale[key] += self._b * (np.sqrt(varV) - self._norm_scale[key]) #Put the variables in place.
+                    featureDict[key] *= self._norm_scale[key]/np.sqrt(S_n)
+
+
         return featureDict
 
     def __vertex_features(self, x_0, x_1):
@@ -189,7 +223,7 @@ class CCVAR:
         if x_1 is not None:
             vfupper = self.__matrix_vector_bw(self._features[0]["u"], x_1)
             
-        return np.hstack([vfself, vfupper])
+        return np.hstack([vfself, vfupper, self._bias[0]])
     
 
        
@@ -207,7 +241,7 @@ class CCVAR:
         if x_2 is not None:
             efupper = self.__matrix_vector_bw(self._features[key]["u"], x_2)
 
-        return np.hstack([efselflower, efselfupper, eflower, efupper])
+        return np.hstack([efselflower, efselfupper, eflower, efupper, self._bias[key]])
     
 
     def __polygon_features(self, x_1, x_2):
@@ -215,9 +249,9 @@ class CCVAR:
         tflower = np.array([])
 
         if x_1 is not None:
-            tflower = self.__matrix_vector_bw(self._features[self._cc_dim - 1], x_1)
+            tflower = self.__matrix_vector_bw(self._features[self._cc_dim]["l"], x_1)
             
-        return np.hstack([tfself, tflower])
+        return np.hstack([tfself, tflower, self._bias[self._cc_dim]])
             
         
        
