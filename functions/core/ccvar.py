@@ -165,8 +165,7 @@ class CCVAR:
         
         for key in self._data_keys:
             currFeature = featureDict[key]
-            Rk = self._Rk[key].copy()
-            Rk.diagonal()[:]+=1
+            Rk = self._Rk[key]
             self._phi[key] = self._gamma * self._phi[key] + (1 - self._gamma) * currFeature.T @ (Rk) @ currFeature
 
             self._r[key] = self._gamma * self._r[key] + (1-self._gamma) * currFeature.T @ inputData[key][:,-1]
@@ -300,7 +299,7 @@ class CCVAR:
                 boundary_1 = cellularComplex[key]
                 up_lap = upper_laplacian(boundary_1)
         
-                self._Rk[key] = self._mu[key][0] * up_lap
+                self._Rk[key] = self._mu[key][0] * up_lap + np.eye(up_lap.shape[0])
                 self._features[key]["s"] = self.__ll_gen(up_lap, self._K[key][0])
                 self._features[key]["u"] = self.__multiply_matrices_blockwise(self._features[key]["s"], boundary_1, self._K[key][0])
 
@@ -313,7 +312,7 @@ class CCVAR:
                 boundary_m1 = cellularComplex[key - 1]
                 low_lap = lower_laplacian(boundary_m1)
                 # self._Hodge["laplacian"][key] = (lower_laplacian(cellularComplex[key-1]))
-                self._Rk[key] = self._mu[key][0] * low_lap
+                self._Rk[key] = self._mu[key][0] * low_lap + np.eye(low_lap.shape[0])
                 self._features[key]["s"] = self.__ll_gen(low_lap, self._K[key][0])
                 self._features["l"] = self.__multiply_matrices_blockwise(self._features[key]["s"], boundary_m1.T, self._K[key][0])
 
@@ -326,7 +325,7 @@ class CCVAR:
 
 
                 # self._Hodge["laplacian"][key] = (lower_laplacian(cellularComplex[key - 1]), upper_laplacian(cellularComplex[key]))
-                self._Rk[key] = self._mu[key][0] * low_lap + self._mu[key][1] * up_lap
+                self._Rk[key] = self._mu[key][0] * low_lap + self._mu[key][1] * up_lap + np.eye(low_lap.shape[0])
                 self._features["sl"] =  self.__ll_gen(low_lap, self._K[key][0])
                 self._features["su"] =  self.__ll_gen(up_lap, self._K[key][1])
                 self._features["l"] = self.__multiply_matrices_blockwise(self._features[key]["sl"], boundary_m1.T, self._K[key][0])
