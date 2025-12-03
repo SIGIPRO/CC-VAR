@@ -12,6 +12,41 @@ def comp_nmse(gt, est):
     den = np.sum(gt**2, axis=0)
     return num / (den + 1e-10)
 
+
+def compute_rolling_nmse(gt, est):
+    """
+    Computes the Rolling NMSE (Cumulative NMSE) over time.
+    
+    Formula: 
+       NMSE_t = || Z_{1:t} - Z_est_{1:t} ||_F^2 / || Z_{1:t} ||_F^2
+    
+    This is equivalent to:
+       (Sum of squared errors from start to t) / (Sum of squared ground truth from start to t)
+    
+    Args:
+        gt (np.ndarray): Ground Truth signals (N, T)
+        est (np.ndarray): Estimated signals (N, T)
+        
+    Returns:
+        np.ndarray: Rolling NMSE vector of shape (T,)
+    """
+    # 1. Compute Squared Error per time step (Summing over nodes/dim 0)
+    # Shape: (T,)
+    sq_error_t = np.sum((gt - est)**2, axis=0)
+    
+    # 2. Compute Squared Energy of Ground Truth per time step
+    # Shape: (T,)
+    sq_energy_t = np.sum(gt**2, axis=0)
+    
+    # 3. Compute Cumulative Sums (Integration over time)
+    cum_sq_error = np.cumsum(sq_error_t)
+    cum_sq_energy = np.cumsum(sq_energy_t)
+    
+    # 4. Compute Ratio (adding epsilon to avoid div by zero at start)
+    rolling_nmse = cum_sq_error / (cum_sq_energy + 1e-10)
+    
+    return rolling_nmse
+
 def plot_nmse(nmse_data, feature_name, t_step, start_idx, output_dir):
     """
     Plots the NMSE over time, mimicking the MATLAB plotter style.
@@ -44,7 +79,7 @@ def plot_nmse(nmse_data, feature_name, t_step, start_idx, output_dir):
         print(f"Saved figure: {save_path}")
     
     # Close to free memory
-    plt.close(fig)
+    # plt.close(fig)
 
 if __name__ == "__main__":
     
@@ -86,7 +121,7 @@ if __name__ == "__main__":
     }
 
     algorithmParam = {
-        'Tstep': 1,
+        'Tstep': 6,
         'P': 2,
         'K': [2, (2, 2), 2],     # K0, (K1_lower, K1_upper), K2
         'mu': [0, (0, 0), 0],    
@@ -134,35 +169,72 @@ if __name__ == "__main__":
         if t % 100 == 0:
             print(f"Step {t}/{T_total}")
 
-    # 7. Calculate NMSE and Plot
+    # # 7. Calculate NMSE and Plot
+    # valid_idx = P + Tstep
+    
+    # # --- EDGE PLOTTING ---
+    # if algorithmParam['enabler'][1]:
+    #     # Compute NMSE vector (over time)
+    #     nmse_edge_vec = comp_nmse(signal_edge[:, valid_idx:], pred_edge[:, valid_idx:])
+    #     mean_nmse_edge = np.mean(nmse_edge_vec)
+    #     print(f"Average Edge NMSE: {mean_nmse_edge:.4f}")
+        
+    #     # Plot
+    #     plot_nmse(nmse_edge_vec, "Edge", Tstep, valid_idx, output_dir)
+    
+    # # --- NODE PLOTTING ---
+    # if algorithmParam['enabler'][0]:
+    #     nmse_node_vec = comp_nmse(signal_node[:, valid_idx:], pred_node[:, valid_idx:])
+    #     mean_nmse_node = np.mean(nmse_node_vec)
+    #     print(f"Average Node NMSE: {mean_nmse_node:.4f}")
+        
+    #     # Plot
+    #     plot_nmse(nmse_node_vec, "Node", Tstep, valid_idx, output_dir)
+
+    # # --- POLYGON PLOTTING ---
+    # if algorithmParam['enabler'][2]:
+    #     nmse_poly_vec = comp_nmse(signal_poly[:, valid_idx:], pred_poly[:, valid_idx:])
+    #     mean_nmse_poly = np.mean(nmse_poly_vec)
+    #     print(f"Average Poly NMSE: {mean_nmse_poly:.4f}")
+        
+    #     # Plot
+    #     plot_nmse(nmse_poly_vec, "Polygon", Tstep, valid_idx, output_dir)
+
+    # 7. Calculate Rolling NMSE and Plot
     valid_idx = P + Tstep
     
     # --- EDGE PLOTTING ---
     if algorithmParam['enabler'][1]:
-        # Compute NMSE vector (over time)
-        nmse_edge_vec = comp_nmse(signal_edge[:, valid_idx:], pred_edge[:, valid_idx:])
-        mean_nmse_edge = np.mean(nmse_edge_vec)
-        print(f"Average Edge NMSE: {mean_nmse_edge:.4f}")
+        # Slice the valid portion where prediction actually happened
+        gt_slice = signal_edge[:, valid_idx:]
+        pred_slice = pred_edge[:, valid_idx:]
         
-        # Plot
-        plot_nmse(nmse_edge_vec, "Edge", Tstep, valid_idx, output_dir)
+        # Compute Rolling NMSE
+        rolling_nmse_edge = compute_rolling_nmse(gt_slice, pred_slice)
+        
+        print(f"Final Rolling Edge NMSE: {rolling_nmse_edge[-1]:.4f}")
+        
+        # Plot (Time axis starts at valid_idx)
+        plot_nmse(rolling_nmse_edge, "Edge", Tstep, valid_idx, output_dir)
     
     # --- NODE PLOTTING ---
     if algorithmParam['enabler'][0]:
-        nmse_node_vec = comp_nmse(signal_node[:, valid_idx:], pred_node[:, valid_idx:])
-        mean_nmse_node = np.mean(nmse_node_vec)
-        print(f"Average Node NMSE: {mean_nmse_node:.4f}")
+        gt_slice = signal_node[:, valid_idx:]
+        pred_slice = pred_node[:, valid_idx:]
         
-        # Plot
-        plot_nmse(nmse_node_vec, "Node", Tstep, valid_idx, output_dir)
+        rolling_nmse_node = compute_rolling_nmse(gt_slice, pred_slice)
+        
+        print(f"Final Rolling Node NMSE: {rolling_nmse_node[-1]:.4f}")
+        plot_nmse(rolling_nmse_node, "Node", Tstep, valid_idx, output_dir)
 
     # --- POLYGON PLOTTING ---
     if algorithmParam['enabler'][2]:
-        nmse_poly_vec = comp_nmse(signal_poly[:, valid_idx:], pred_poly[:, valid_idx:])
-        mean_nmse_poly = np.mean(nmse_poly_vec)
-        print(f"Average Poly NMSE: {mean_nmse_poly:.4f}")
+        gt_slice = signal_poly[:, valid_idx:]
+        pred_slice = pred_poly[:, valid_idx:]
         
-        # Plot
-        plot_nmse(nmse_poly_vec, "Polygon", Tstep, valid_idx, output_dir)
+        rolling_nmse_poly = compute_rolling_nmse(gt_slice, pred_slice)
+        
+        print(f"Final Rolling Poly NMSE: {rolling_nmse_poly[-1]:.4f}")
+        plot_nmse(rolling_nmse_poly, "Polygon", Tstep, valid_idx, output_dir)
 
-        plt.show()
+    plt.show()

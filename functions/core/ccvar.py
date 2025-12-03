@@ -57,34 +57,99 @@ class CCVAR:
             self._data[key] = np.roll(self._data[key], shift=-1, axis=1)
             self._data[key][:, -1] = inputData[key].flatten()
 
+    # def forecast(self, steps):
+    #     """Recursive N-step forecasting."""
+    #     preds = {k: np.zeros((self._N[k], steps)) for k in self._data_keys}
+        
+    #     saved_data = copy.deepcopy(self._data)
+    #     saved_norm = copy.deepcopy(self._norm_scale)
+        
+    #     # Reset norm for prediction
+    #     for k in self._data_keys:
+    #         self._norm_scale[k] = 0
+
+    #     for t in range(steps):
+    #         feats = self._feature_gen()
+    #         current_step_pred = {}
+            
+    #         for k in self._data_keys:
+    #             if self._theta[k] is None: continue
+    #             y_pred = feats[k] @ self._theta[k]
+    #             preds[k][:, t] = y_pred.flatten()
+    #             current_step_pred[k] = y_pred.flatten()
+            
+    #         if t < steps - 1:
+    #             for k in self._data_keys:
+    #                 self._data[k] = np.roll(self._data[k], shift=-1, axis=1)
+    #                 self._data[k][:, -1] = current_step_pred[k]
+
+    #     self._data = saved_data
+    #     self._norm_scale = saved_norm
+    #     return preds
+
     def forecast(self, steps):
-        """Recursive N-step forecasting."""
+        """
+        Recursive N-step forecasting with Self-Adaptation.
+        Matches MATLAB behavior: Updates weights based on predictions during the window.
+        """
         preds = {k: np.zeros((self._N[k], steps)) for k in self._data_keys}
         
+        # 1. Snapshot EVERYTHING (Data, Norms, AND Optimizer State)
+        # We must copy theta/phi/r because MATLAB updates them during the forecast loop.
+        # We want these updates to happen temporarily for the forecast, 
+        # but NOT persist to the next real training step.
         saved_data = copy.deepcopy(self._data)
         saved_norm = copy.deepcopy(self._norm_scale)
+        saved_theta = copy.deepcopy(self._theta)
+        saved_phi = copy.deepcopy(self._phi)
+        saved_r = copy.deepcopy(self._r)
         
-        # Reset norm for prediction
+        # Reset norm scale for prediction phase (Matches MATLAB)
         for k in self._data_keys:
             self._norm_scale[k] = 0
 
         for t in range(steps):
+            # Generate features
             feats = self._feature_gen()
-            current_step_pred = {}
             
+            current_step_pred = {}
             for k in self._data_keys:
                 if self._theta[k] is None: continue
-                y_pred = feats[k] @ self._theta[k]
+                
+                # A. Predict
+                S = feats[k]
+                y_pred = S @ self._theta[k]
+                
                 preds[k][:, t] = y_pred.flatten()
                 current_step_pred[k] = y_pred.flatten()
+                
+                # B. Self-Adaptation (Crucial for T > 1)
+                # Treat the prediction (y_pred) as the "target" to update weights locally.
+                # This aligns with SCVAR_OnlineEstimator call in MATLAB's forecast loop.
+                
+                # 1. Update Phi and r using prediction
+                self._update_state(k, S, y_pred) # y_pred is (N, 1)
+                
+                # 2. Compute Step Size
+                eta = self._compute_step_size(k)
+                
+                # 3. Update Theta
+                self._apply_descent_step(k, eta)
             
+            # C. Shift Buffer for next step
             if t < steps - 1:
                 for k in self._data_keys:
                     self._data[k] = np.roll(self._data[k], shift=-1, axis=1)
                     self._data[k][:, -1] = current_step_pred[k]
 
+        # 2. Restore State
+        # Discard the "hallucinated" updates so they don't affect real training
         self._data = saved_data
         self._norm_scale = saved_norm
+        self._theta = saved_theta
+        self._phi = saved_phi
+        self._r = saved_r
+        
         return preds
 
     # =========================================================================
@@ -137,10 +202,41 @@ class CCVAR:
             else:
                 self._bias[key] = np.empty(shape=(self._N[key], 0))
 
+    # def _feature_gen(self):
+    #     """
+    #     Generic Feature Generation for N-dimensions.
+    #     Automatically finds Lower (k-1) and Upper (k+1) neighbors if they exist.
+    #     """
+    #     featureDict = dict()
+
+    #     for key in self._data_keys:
+    #         x_self = self._data[key]
+            
+    #         # Dynamic Neighbor Retrieval
+    #         # If key-1 exists in our data, get it.
+    #         x_lower = self._data.get(key - 1) if (key - 1) in self._data else None
+            
+    #         # If key+1 exists in our data, get it.
+    #         x_upper = self._data.get(key + 1) if (key + 1) in self._data else None
+            
+    #         # Generate features generically
+    #         featureDict[key] = self.__generic_features(key, x_self, x_lower, x_upper)
+
+    #         # Normalization
+    #         if self._FeatureNormalzn:
+    #             S = featureDict[key]
+    #             S_n = np.sum(S**2)
+    #             if S_n == 0: S_n = 0.001
+    #             varV = np.sum(x_self[:, -1]**2)
+    #             self._norm_scale[key] = (1 - self._b) * self._norm_scale[key] + self._b * np.sqrt(varV)
+    #             featureDict[key] = (S / np.sqrt(S_n)) * self._norm_scale[key]
+
+    #     return featureDict
+
     def _feature_gen(self):
         """
         Generic Feature Generation for N-dimensions.
-        Automatically finds Lower (k-1) and Upper (k+1) neighbors if they exist.
+        Corrected Normalization: Column-wise scaling.
         """
         featureDict = dict()
 
@@ -148,10 +244,7 @@ class CCVAR:
             x_self = self._data[key]
             
             # Dynamic Neighbor Retrieval
-            # If key-1 exists in our data, get it.
             x_lower = self._data.get(key - 1) if (key - 1) in self._data else None
-            
-            # If key+1 exists in our data, get it.
             x_upper = self._data.get(key + 1) if (key + 1) in self._data else None
             
             # Generate features generically
@@ -160,10 +253,22 @@ class CCVAR:
             # Normalization
             if self._FeatureNormalzn:
                 S = featureDict[key]
-                S_n = np.sum(S**2)
-                if S_n == 0: S_n = 0.001
+                
+                # CRITICAL FIX: axis=0 ensures we normalize each feature column independently
+                # shape: (Feature_Dim,)
+                S_n = np.sum(S**2, axis=0) 
+                
+                # Avoid division by zero
+                S_n[S_n == 0] = 0.001
+                
+                # Calculate signal energy (variance proxy) from most recent lag
                 varV = np.sum(x_self[:, -1]**2)
+                
+                # Update running scale
                 self._norm_scale[key] = (1 - self._b) * self._norm_scale[key] + self._b * np.sqrt(varV)
+                
+                # Broadcast division: (N, Feat) / (Feat,)
+                # Every feature column is scaled to have norm equal to norm_scale
                 featureDict[key] = (S / np.sqrt(S_n)) * self._norm_scale[key]
 
         return featureDict
