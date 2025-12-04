@@ -19,14 +19,13 @@
      "ruff>=0.2",
      "pytest>=8.0",
  ]
+
+[project.urls]
+"Homepage" = "https://github.com/Xhipin/ccvar_python"
  
-#  [project.urls]
-#  repository = "https://github.com/Xhipin/ccvar_python"
- 
- [tool.setuptools.packages.find]
- where = ["src"]
- include = ["ccvar*"]
-#  namespaces = true
+[tool.setuptools.packages.find]
+where = ["src"]
+
  
  [tool.ruff]
  target-version = "py310"
