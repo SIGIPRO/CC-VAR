@@ -5,10 +5,9 @@ class CCVAR:
     def __init__(self, algorithmParam, cellularComplex, theta_initializer=None):
         self.__algorithm_parameter_setup(algorithmParam)
         
-        # Generic keys: [0, 1, 2, 3...]
+        # Generic keys: [0, 1, 2...]
         self._data_keys = sorted([i for i, en in enumerate(self._data_enabler) if en])
         
-        # Initialize storage
         self._phi = dict()
         self._r = dict()
         self._theta = dict()
@@ -34,58 +33,32 @@ class CCVAR:
 
     def _handle_topology_change(self, cellularComplex):
         """Virtual method for state handling during topology change."""
-        # Default: Cold start (reset everything)
         self._allocate_state_variables()
         self._data_initializer()
 
     def update(self, inputData):
-        """Online Learning Loop."""
+        """Online Learning Loop (Single Step)."""
         featureDict = self._feature_gen()
-        
+        # import pdb; pdb.set_trace()
         for key in self._data_keys:
             if key not in inputData: continue
             
             S = featureDict[key]
+            # Ensure target is (N, 1)
             target = inputData[key].reshape(-1, 1)
             
-            # --- Hooks for Distributed/Gradient Logic ---
+            # --- Optimization Hooks ---
             self._update_state(key, S, target)
             eta = self._compute_step_size(key)
             self._apply_descent_step(key, eta)
 
-            # Update History (Slide Window)
-            self._data[key] = np.roll(self._data[key], shift=-1, axis=1)
-            self._data[key][:, -1] = inputData[key].flatten()
-
-    # def forecast(self, steps):
-    #     """Recursive N-step forecasting."""
-    #     preds = {k: np.zeros((self._N[k], steps)) for k in self._data_keys}
-        
-    #     saved_data = copy.deepcopy(self._data)
-    #     saved_norm = copy.deepcopy(self._norm_scale)
-        
-    #     # Reset norm for prediction
-    #     for k in self._data_keys:
-    #         self._norm_scale[k] = 0
-
-    #     for t in range(steps):
-    #         feats = self._feature_gen()
-    #         current_step_pred = {}
+             # NEW (MATLAB Equivalent):
+            old_data = self._data[key][:, 1:]
             
-    #         for k in self._data_keys:
-    #             if self._theta[k] is None: continue
-    #             y_pred = feats[k] @ self._theta[k]
-    #             preds[k][:, t] = y_pred.flatten()
-    #             current_step_pred[k] = y_pred.flatten()
+            # current_step_pred[k] is flat (N,), make it (N, 1)
+            new_col = inputData[key].reshape(-1, 1)
             
-    #         if t < steps - 1:
-    #             for k in self._data_keys:
-    #                 self._data[k] = np.roll(self._data[k], shift=-1, axis=1)
-    #                 self._data[k][:, -1] = current_step_pred[k]
-
-    #     self._data = saved_data
-    #     self._norm_scale = saved_norm
-    #     return preds
+            self._data[key] = np.hstack([old_data, new_col])
 
     def forecast(self, steps):
         """
@@ -95,21 +68,18 @@ class CCVAR:
         preds = {k: np.zeros((self._N[k], steps)) for k in self._data_keys}
         
         # 1. Snapshot EVERYTHING (Data, Norms, AND Optimizer State)
-        # We must copy theta/phi/r because MATLAB updates them during the forecast loop.
-        # We want these updates to happen temporarily for the forecast, 
-        # but NOT persist to the next real training step.
         saved_data = copy.deepcopy(self._data)
         saved_norm = copy.deepcopy(self._norm_scale)
         saved_theta = copy.deepcopy(self._theta)
         saved_phi = copy.deepcopy(self._phi)
         saved_r = copy.deepcopy(self._r)
         
-        # Reset norm scale for prediction phase (Matches MATLAB)
+        # Reset norm scale for prediction phase (Matches MATLAB logic)
         for k in self._data_keys:
             self._norm_scale[k] = 0
 
         for t in range(steps):
-            # Generate features
+            # Generate features (Uses current temporary buffer)
             feats = self._feature_gen()
             
             current_step_pred = {}
@@ -122,28 +92,29 @@ class CCVAR:
                 
                 preds[k][:, t] = y_pred.flatten()
                 current_step_pred[k] = y_pred.flatten()
+
+                         # B. NO UPDATE HERE! 
+                # We skip _update_state, _compute_step_size, and _apply_descent_step.
+                # We trust the weights learned from real data.
                 
-                # B. Self-Adaptation (Crucial for T > 1)
-                # Treat the prediction (y_pred) as the "target" to update weights locally.
-                # This aligns with SCVAR_OnlineEstimator call in MATLAB's forecast loop.
-                
-                # 1. Update Phi and r using prediction
-                self._update_state(k, S, y_pred) # y_pred is (N, 1)
-                
-                # 2. Compute Step Size
+                # # B. Self-Adaptation (Crucial for T > 1)
+                # We treat the prediction as the ground truth for a temporary weight update.
+                self._update_state(k, S, y_pred) 
                 eta = self._compute_step_size(k)
-                
-                # 3. Update Theta
                 self._apply_descent_step(k, eta)
             
             # C. Shift Buffer for next step
             if t < steps - 1:
                 for k in self._data_keys:
-                    self._data[k] = np.roll(self._data[k], shift=-1, axis=1)
-                    self._data[k][:, -1] = current_step_pred[k]
+                     # NEW (MATLAB Equivalent):
+                    old_data = self._data[k][:, 1:]
+                    
+                    # current_step_pred[k] is flat (N,), make it (N, 1)
+                    new_col = current_step_pred[k].reshape(-1, 1)
+                    
+                    self._data[k] = np.hstack([old_data, new_col])
 
-        # 2. Restore State
-        # Discard the "hallucinated" updates so they don't affect real training
+        # 2. Restore State to pre-forecast values
         self._data = saved_data
         self._norm_scale = saved_norm
         self._theta = saved_theta
@@ -163,6 +134,7 @@ class CCVAR:
 
     def _compute_step_size(self, key):
         if self._phi[key].size > 0:
+            # Use eigvalsh for symmetric matrix stability
             maxeig = np.max(np.linalg.eigvalsh(self._phi[key]))
         else:
             maxeig = 0
@@ -173,6 +145,7 @@ class CCVAR:
         self._theta[key] -= eta * grad
 
         if self._LassoEn:
+            # Element-wise maximum for soft thresholding
             val = 1 - (eta * self._lambda) / (np.abs(self._theta[key]) + 1e-9)
             self._theta[key] *= np.maximum(0, val)
 
@@ -202,95 +175,63 @@ class CCVAR:
             else:
                 self._bias[key] = np.empty(shape=(self._N[key], 0))
 
-    # def _feature_gen(self):
-    #     """
-    #     Generic Feature Generation for N-dimensions.
-    #     Automatically finds Lower (k-1) and Upper (k+1) neighbors if they exist.
-    #     """
-    #     featureDict = dict()
-
-    #     for key in self._data_keys:
-    #         x_self = self._data[key]
-            
-    #         # Dynamic Neighbor Retrieval
-    #         # If key-1 exists in our data, get it.
-    #         x_lower = self._data.get(key - 1) if (key - 1) in self._data else None
-            
-    #         # If key+1 exists in our data, get it.
-    #         x_upper = self._data.get(key + 1) if (key + 1) in self._data else None
-            
-    #         # Generate features generically
-    #         featureDict[key] = self.__generic_features(key, x_self, x_lower, x_upper)
-
-    #         # Normalization
-    #         if self._FeatureNormalzn:
-    #             S = featureDict[key]
-    #             S_n = np.sum(S**2)
-    #             if S_n == 0: S_n = 0.001
-    #             varV = np.sum(x_self[:, -1]**2)
-    #             self._norm_scale[key] = (1 - self._b) * self._norm_scale[key] + self._b * np.sqrt(varV)
-    #             featureDict[key] = (S / np.sqrt(S_n)) * self._norm_scale[key]
-
-    #     return featureDict
-
     def _feature_gen(self):
         """
-        Generic Feature Generation for N-dimensions.
-        Corrected Normalization: Column-wise scaling.
+        Generic Feature Generation.
+        CRITICAL FIX: Normalization is Column-Wise (axis=0).
         """
         featureDict = dict()
 
         for key in self._data_keys:
             x_self = self._data[key]
-            
-            # Dynamic Neighbor Retrieval
             x_lower = self._data.get(key - 1) if (key - 1) in self._data else None
             x_upper = self._data.get(key + 1) if (key + 1) in self._data else None
             
-            # Generate features generically
-            featureDict[key] = self.__generic_features(key, x_self, x_lower, x_upper)
+            # Generate Raw Features
+            S = self.__generic_features(key, x_self, x_lower, x_upper)
 
             # Normalization
             if self._FeatureNormalzn:
-                S = featureDict[key]
+                # 1. Compute Squared Norm per Column (Vector of size FeatDim)
+                # CRITICAL: axis=0 prevents scalar summation of the whole matrix
+                S_n = np.sum(S**2, axis=0)
                 
-                # CRITICAL FIX: axis=0 ensures we normalize each feature column independently
-                # shape: (Feature_Dim,)
-                S_n = np.sum(S**2, axis=0) 
-                
-                # Avoid division by zero
+                # 2. Floor to prevent division by zero (Matches MATLAB 0.001)
                 S_n[S_n == 0] = 0.001
                 
-                # Calculate signal energy (variance proxy) from most recent lag
+                # 3. Compute Signal Variance (Scalar) of the most recent lag
                 varV = np.sum(x_self[:, -1]**2)
                 
-                # Update running scale
+                # 4. Update Running Scale
                 self._norm_scale[key] = (1 - self._b) * self._norm_scale[key] + self._b * np.sqrt(varV)
                 
-                # Broadcast division: (N, Feat) / (Feat,)
-                # Every feature column is scaled to have norm equal to norm_scale
+                # 5. Broadcast Division and Scale
+                # (N, F) / (F,) -> Each column divided by its norm
                 featureDict[key] = (S / np.sqrt(S_n)) * self._norm_scale[key]
+            else:
+                featureDict[key] = S
 
         return featureDict
 
     def __generic_features(self, key, x_self, x_lower, x_upper):
         """
-        Constructs [Self_Lower, Self_Upper, Neighbor_Lower, Neighbor_Upper, Bias]
+        Constructs S = [Neighbor_Lower, Self_Lower, Self_Upper, Neighbor_Upper, Bias]
+        Order matched to MATLAB: [Lower, Self, Upper, Bias]
         """
         components = []
         
-        # 1. Self Features (Lower Coupling)
-        if "sl" in self._features[key]:
-             components.append(self.__matrix_vector_bw(self._features[key]["sl"], x_self))
-        
-        # 2. Self Features (Upper Coupling)
-        if "su" in self._features[key]:
-             components.append(self.__matrix_vector_bw(self._features[key]["su"], x_self))
-        
-        # 3. Lower Neighbor Features (L * B_k^T * x_{k-1})
+        # 1. Lower Neighbor Features (L * B_k^T * x_{k-1})
         if x_lower is not None and "l" in self._features[key]:
             components.append(self.__matrix_vector_bw(self._features[key]["l"], x_lower))
 
+        # 2. Self Features (Lower Coupling)
+        if "sl" in self._features[key]:
+             components.append(self.__matrix_vector_bw(self._features[key]["sl"], x_self))
+        
+        # 3. Self Features (Upper Coupling)
+        if "su" in self._features[key]:
+             components.append(self.__matrix_vector_bw(self._features[key]["su"], x_self))
+        
         # 4. Upper Neighbor Features (L * B_{k+1} * x_{k+1})
         if x_upper is not None and "u" in self._features[key]:
             components.append(self.__matrix_vector_bw(self._features[key]["u"], x_upper))
@@ -301,10 +242,6 @@ class CCVAR:
         return np.hstack(components)
 
     def _construct_laplacian(self, cellularComplex):
-        """
-        Generic N-Dimensional Topology Construction.
-        For any dimension 'k', looks for boundaries at 'k' and 'k+1'.
-        """
         self._N = dict()
         self._features = dict()
         self._Rk = dict()
@@ -313,77 +250,71 @@ class CCVAR:
             self._features[k] = {}
             feature_dim_accum = 0
             
-            # --- Identify Boundaries ---
-            # B_down connects k -> k-1 (Stored at cellularComplex[k])
-            # B_up   connects k+1 -> k (Stored at cellularComplex[k+1])
             B_down = cellularComplex.get(k)
             B_up   = cellularComplex.get(k+1)
             
-            # We determine N from the available boundaries
             if B_down is not None:
-                self._N[k] = B_down.shape[1]  # Cols of B_k are k-simplices
+                self._N[k] = B_down.shape[1]
             elif B_up is not None:
-                self._N[k] = B_up.shape[0]    # Rows of B_{k+1} are k-simplices
+                self._N[k] = B_up.shape[0]
             else:
-                raise ValueError(f"Dimension {k} enabled but no connecting boundaries found in complex.")
+                raise ValueError(f"Dim {k} enabled but no boundaries found.")
 
-            # --- Compute Laplacians ---
             L_lower = None
             L_upper = None
             
             if B_down is not None:
                 L_lower = B_down.T @ B_down
-                
             if B_up is not None:
                 L_upper = B_up @ B_up.T
                 
-            # --- Regularization Matrix Rk ---
-            # Mu logic: if tuple, [0]=lower, [1]=upper. If scalar, applied to whatever exists.
             mu_val = self._mu[k] if k < len(self._mu) else 0
-            
             self._Rk[k] = np.eye(self._N[k])
             
+            # --- Feature Dimension accumulation matches Order in __generic_features ---
+            # 1. Lower Neighbor
             if L_lower is not None:
-                mu_l = mu_val[0] if isinstance(mu_val, (list, tuple)) else mu_val
-                self._Rk[k] += mu_l * L_lower
-                # Generate Features
-                # Note: K might be tuple (K_lower, K_upper) or scalar
                 K_val = self._K[k] if k < len(self._K) else 2
                 K_l = K_val[0] if isinstance(K_val, (list, tuple)) else K_val
                 
                 self._features[k]["sl"] = self.__ll_gen(L_lower, K_l)
-                # Coupling from Lower Neighbor (k-1)
+                
+                # Check for Lower Neighbor existence
                 if (k-1) in self._data_keys:
                     self._features[k]["l"] = self.__multiply_matrices_blockwise(self._features[k]["sl"], B_down.T)
                     feature_dim_accum += K_l * self._P
-                
-                feature_dim_accum += K_l * self._P # For Self-Lower
+            
+            # 2. Self (Lower)
+            if L_lower is not None:
+                 feature_dim_accum += K_l * self._P 
 
+            # 3. Self (Upper)
             if L_upper is not None:
-                mu_u = mu_val[1] if isinstance(mu_val, (list, tuple)) else mu_val
-                self._Rk[k] += mu_u * L_upper
-                
                 K_val = self._K[k] if k < len(self._K) else 2
                 K_u = K_val[1] if isinstance(K_val, (list, tuple)) else K_val
                 
                 self._features[k]["su"] = self.__ll_gen(L_upper, K_u)
-                # Coupling from Upper Neighbor (k+1)
+                feature_dim_accum += K_u * self._P
+            
+            # 4. Upper Neighbor
+            if L_upper is not None:
                 if (k+1) in self._data_keys:
                     self._features[k]["u"] = self.__multiply_matrices_blockwise(self._features[k]["su"], B_up)
                     feature_dim_accum += K_u * self._P
 
-                feature_dim_accum += K_u * self._P # For Self-Upper
-            
-            # --- Special Case for Top/Bottom specific naming compatibility ---
-            # If only one Laplacian exists, your original code might have mapped it to "s" (self).
-            # To keep generic logic simple, we use "sl" and "su". 
-            # If strictly L_upper exists (Node), we rely on "su".
-            # If strictly L_lower exists (Top Poly), we rely on "sl".
-            
+            # 5. Bias
             feature_dim_accum += int(self._bias_enabler)
+            
+            # Add regularization for L_lower/L_upper
+            if L_lower is not None:
+                 mu_l = mu_val[0] if isinstance(mu_val, (list, tuple)) else mu_val
+                 self._Rk[k] += mu_l * L_lower
+            if L_upper is not None:
+                 mu_u = mu_val[1] if isinstance(mu_val, (list, tuple)) else mu_val
+                 self._Rk[k] += mu_u * L_upper
+            
             self._features[k]["S_dim"] = feature_dim_accum
 
-    # --- Helpers (Unchanged) ---
     def __ll_gen(self, L, K):
         LL = np.empty((L.shape[0], L.shape[1], K))
         curr_L = np.eye(L.shape[0])
@@ -403,11 +334,28 @@ class CCVAR:
 
     @staticmethod
     def __matrix_vector_bw(MB_stack, X):
-        Y_out = np.einsum('nmk,mp->nkp', MB_stack, X)
+
+            # X shape: (N_in, P_lags) -> [Oldest ... Newest]
+        
+        # 1. Flip X along time axis (axis 1) to match MATLAB's loop order
+        # New shape: [Newest ... Oldest]
+        X_flipped = X[:, ::-1]
+        
+        # 2. Einsum
+        # MB_stack: (N_out, N_in, K)
+        # X_flipped: (N_in, P)
+        # Output Y_out: (N_out, K, P)
+        Y_out = np.einsum('nmk,mp->nkp', MB_stack, X_flipped)
+        
+        # 3. Flatten (Fortran order)
+        # This keeps the first index (N) contiguous, then K, then P.
+        # Since P is now [Newest...Oldest], the columns of S will be:
+        # [K_block(Newest), K_block(2nd_Newest), ...]
         return np.reshape(Y_out, shape=(MB_stack.shape[0], -1), order='F')
+        # Y_out = np.einsum('nmk,mp->nkp', MB_stack, X)
+        # return np.reshape(Y_out, shape=(MB_stack.shape[0], -1), order='F')
 
     def __algorithm_parameter_setup(self, algorithmParam):
-        # Unchanged from previous version
         self._Tstep = algorithmParam.get('Tstep', 1)
         self._mu = algorithmParam.get('mu', [0, (0,0), 0]) 
         self._lambda = algorithmParam.get('lambda', 0.01)

@@ -24,8 +24,9 @@
 #  repository = "https://github.com/Xhipin/ccvar_python"
  
  [tool.setuptools.packages.find]
- include = ["functions*"]
- namespaces = true
+ where = ["src"]
+ include = ["ccvar*"]
+#  namespaces = true
  
  [tool.ruff]
  target-version = "py310"
