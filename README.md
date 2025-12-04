@@ -17,7 +17,7 @@ CC-VAR extends vector autoregression to **Cellular Complexes**, enabling efficie
 You can install the package directly from GitHub using `pip`:
 
 ```bash
-pip install git+https://github.com/[YOUR_USERNAME]/[REPO_NAME].git
+pip install git+https://github.com/SIGIPRO/CC-VAR
 ```
 
 
