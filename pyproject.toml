@@ -21,7 +21,7 @@
  ]
 
 [project.urls]
-"Homepage" = "https://github.com/Xhipin/ccvar_python"
+"Homepage" = "https://github.com/SIGIPRO/CC-VAR"
  
 [tool.setuptools.packages.find]
 where = ["src"]
