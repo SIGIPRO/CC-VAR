@@ -141,13 +141,17 @@ class CCVAR:
         return 1.0 / (0.0001 + maxeig)
 
     def _apply_descent_step(self, key, eta):
-        grad = (self._phi[key] @ self._theta[key]) - self._r[key] + (self._lambda * self._theta[key])
+        # self._grad = (self._phi[key] @ self._theta[key]) - self._r[key] + (self._lambda * self._theta[key])
+        grad = self._get_gradient(key)
         self._theta[key] -= eta * grad
 
         if self._LassoEn:
             # Element-wise maximum for soft thresholding
             val = 1 - (eta * self._lambda) / (np.abs(self._theta[key]) + 1e-9)
             self._theta[key] *= np.maximum(0, val)
+
+    def _get_gradient(self, key):
+        return (self._phi[key] @ self._theta[key]) - self._r[key] + (self._lambda * self._theta[key])
 
     # =========================================================================
     # Generic Helpers
