@@ -4,7 +4,7 @@
  
  [project]
  name = "ccvar-python"
- version = "0.1.0"
+ version = "0.2.0"
  description = "Cell complex vector autoregressive models with Laplacian-based features."
  authors = [{name = "Abdullah Canbolat"}]
  license = {text = "Proprietary"}
